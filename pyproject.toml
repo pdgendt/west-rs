@@ -1,0 +1,136 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "west"
+version = "1.5.99"
+authors = [{name = "Zephyr Project", email = "devel@lists.zephyrproject.org"}]
+description = "Zephyr RTOS Project meta-tool"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "colorama~=0.4",
+    "packaging~=25.0",
+    "pykwalify~=1.8",
+    "pyyaml~=6.0",
+]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+
+[project.readme]
+file = "README.rst"
+content-type = "text/x-rst"
+
+[project.urls]
+Homepage = "https://github.com/zephyrproject-rtos/west"
+
+[project.scripts]
+west = "west.app.main:main"
+
+[dependency-groups]
+lint = [
+    "ruff~=0.13",
+]
+test = [
+    "coverage~=7.10",
+    "pytest>=8.4,<10.0",
+    "pytest-cov~=7.0",
+    "pytest-xdist>=3",
+]
+types = [
+    "mypy~=1.18",
+    "types-pyyaml~=6.0",
+]
+dev = [
+    "poethepoet~=0.37",
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "types"},
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+zip-safe = false
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+# Note this section is only for interactive `coverage run ...` use and ignored by "gh-test"
+# below.  pytest's --cov-config= option is for passing .coveragerc file syntax and it seems to
+# silently ignore pyproject.toml files.
+[tool.coverage.run]
+patch = ["subprocess"]
+relative_files = true
+source = ["src/"]
+
+[tool.coverage.paths]
+source = [
+  "src/west",
+  "*/site-packages/west",
+  "*/src/west",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = [
+  "B",   # flake8-bugbear
+  "E",   # pycodestyle errors
+  "F",   # Pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "W",   # pycodestyle warnings
+]
+
+[tool.ruff.format]
+quote-style = "preserve"
+line-ending = "lf"
+# Enable preview mode for Github Annotations added in 0.13.3
+preview = true
+
+[tool.mypy]
+mypy_path = "src"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# You can override any pytest option via pytest argument `-o key=value`.
+# E.g. unset option `-o pythonpath=` to use the installed west in tests
+pythonpath = "src"
+
+[tool.poe.tasks.test]
+cmd = "python -m pytest -W error"
+env = {PYTHONIOENCODING = "utf-8"}
+
+[tool.poe.tasks.test-xdist]
+ref = "test -n auto"
+
+[tool.poe.tasks]
+lint = "ruff check ."
+format = "ruff format"
+types = "mypy --package west"
+# work in progress
+types-extra = "mypy --package west --check-untyped-defs"
+
+all = ["test", "lint", "format", "types"]
+
+# Github specific tasks, see comments in .github/workflows/*.yml
+gh-lint = "ruff check --output-format=github ."
+gh-format = "ruff format --check --output-format=github"
+
+[tool.poe.tasks.gh-test]
+# Keep the --cov= option in sync with [tool.coverage.run] above.
+cmd = "python -m pytest -W error -v -o pythonpath= -o junit_family=xunit1 --junitxml=junit.xml --cov-report=html --cov=src/"
+env = {PYTHONIOENCODING = "utf-8"}
