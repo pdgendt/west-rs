@@ -45,13 +45,15 @@ from pathlib import Path
 
 from maturin import build_editable as _maturin_build_editable
 
-# Re-export the sdist hooks unchanged: they don't touch the wheel data dir.
+# `get_requires_*` are pure passthroughs. `build_sdist` is wrapped below
+# (see `build_sdist`) because maturin validates that `[tool.maturin] data`
+# exists even when writing an sdist, so we must create it first.
+from maturin import build_sdist as _maturin_build_sdist
+from maturin import build_wheel as _maturin_build_wheel
 from maturin import (  # noqa: F401
-    build_sdist,
     get_requires_for_build_sdist,
     get_requires_for_build_wheel,
 )
-from maturin import build_wheel as _maturin_build_wheel
 from maturin import prepare_metadata_for_build_wheel as _maturin_prepare_metadata_for_build_wheel
 
 # PEP 660 hook for editable installs. Maturin only registers this on
@@ -132,6 +134,16 @@ if _maturin_prepare_metadata_for_build_editable is not None:
     def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
         _ensure_data_dir()
         return _maturin_prepare_metadata_for_build_editable(metadata_directory, config_settings)
+
+
+def build_sdist(sdist_directory, config_settings=None):
+    # An sdist is source-only and doesn't need the CLI binary staged, but
+    # maturin still validates that `[tool.maturin] data` exists, so create
+    # the (empty) data dir before delegating. Without this, a clean
+    # checkout's `build_sdist` fails with "No such data directory
+    # .wheel-data".
+    _ensure_data_dir()
+    return _maturin_build_sdist(sdist_directory, config_settings)
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
