@@ -195,12 +195,8 @@ def test_append_honours_scope_does_not_peek_at_other_layers(workspace):
     c = Configuration(workspace)
     c.set("manifest.project-filter", ["+global"], ConfigFile.GLOBAL)
     c.append("manifest.project-filter", "+local", ConfigFile.LOCAL)
-    assert c.get_list_str(
-        "manifest.project-filter", configfile=ConfigFile.LOCAL
-    ) == ["+local"]
-    assert c.get_list_str(
-        "manifest.project-filter", configfile=ConfigFile.GLOBAL
-    ) == ["+global"]
+    assert c.get_list_str("manifest.project-filter", configfile=ConfigFile.LOCAL) == ["+local"]
+    assert c.get_list_str("manifest.project-filter", configfile=ConfigFile.GLOBAL) == ["+global"]
 
 
 def test_append_with_configfile_all_is_rejected(workspace):
