@@ -82,8 +82,15 @@ python-source = "src"
 data = ".wheel-data"
 # Pull `py.typed` (PEP 561 marker) into both sdist and wheel —
 # maturin's default file discovery would skip it.
+#
+# `_build_backend.py` is the in-tree PEP 517 backend
+# (`build-backend = "_build_backend"`); it must ship in the sdist so a
+# `pip install <sdist>` / build-from-source can import it. maturin's
+# default discovery skips top-level files outside a crate, so add it
+# explicitly. sdist-only: it's a build-time module, not a runtime one.
 include = [
     { path = "src/west/py.typed", format = ["sdist", "wheel"] },
+    { path = "_build_backend.py", format = "sdist" },
 ]
 # Pass `--locked` to cargo: forbid lockfile mutation during the build
 # and SHA-256-verify every fetched crate against `Cargo.lock`. Pins
