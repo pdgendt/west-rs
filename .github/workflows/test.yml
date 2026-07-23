@@ -13,8 +13,77 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Run poe tasks
+  # ---------------------------------------------------------------------------
+  # Build the abi3 wheel ONCE per OS. The wheel is `cp310-abi3`, so a single
+  # build covers every supported Python version — the test matrix below
+  # installs this prebuilt wheel instead of recompiling the Rust workspace
+  # once per (os, python) combination.
+  # ---------------------------------------------------------------------------
+  build-wheel:
+    name: Build wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # Pin the cargo target dir to a stable, absolute path. `uv build`
+      # compiles in an isolated/throwaway directory, so without this the
+      # build cache below would have nothing persistent to save. The
+      # custom backend honors CARGO_TARGET_DIR when locating the staged
+      # `west` binary.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/cargo-target
+      CARGO_INCREMENTAL: "0"
+      # This wheel is only used to run the test suite, so it doesn't need
+      # optimized codegen. Compile the "release" profile at opt-level 0
+      # (~2-3x faster). package.yml / release.yml build the real optimized
+      # wheel for distribution.
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "false"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        # A path with a space catches many quoting issues.
+        with:
+          path: "./check out"
+          persist-credentials: false
+
+      # Runners ship a stable Rust toolchain; we only add build caching.
+      # TODO: pin to a commit SHA to match the repo's action-pinning policy
+      # (see scorecards.yml / dependency-review.yml).
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./check out"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          # abi3 floor; the resulting wheel works on 3.10+.
+          python-version: '3.10'
+          working-directory: './check out/'
+          enable-cache: true
+
+      - name: Build abi3 wheel
+        working-directory: "./check out"
+        run: uv build --wheel --out-dir dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: wheel-${{ matrix.os }}
+          path: "./check out/dist/*.whl"
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Test matrix: install the prebuilt wheel (no Rust toolchain, no compile)
+  # and run the pytest / mypy / xdist poe tasks against it.
+  # ---------------------------------------------------------------------------
+  test:
+    name: ${{ matrix.task }} (${{ matrix.os }} / ${{ matrix.python-version }})
+    needs: [build-wheel]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -22,30 +91,21 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
         task: [gh-test]
-        # The include map here is actually used to extend the matrix.
-        # By passing all keys used in the matrix we append new unique combinations
-        # that do not run across the whole matrix but only once. These poe tasks
-        # are defined in pyproject.toml.
-        # For more information see:
-        # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#example-adding-configurations
+        # Extra one-off task combinations (see the GitHub docs on adding
+        # matrix configurations). These need the compiled `_west_native`
+        # module, so they install the prebuilt wheel like the test jobs.
+        # Pure-Python checks (ruff) live in the separate `lint` job, which
+        # skips the build entirely.
         include:
-          # Run linter/type checks only on 1 combination
-          - os: ubuntu-latest
-            python-version: '3.13'
-            task: test
-          - os: ubuntu-latest
-            python-version: '3.13'
-            task: gh-lint
-          - os: ubuntu-latest
-            python-version: '3.13'
-            task: gh-format
+          # mypy needs the compiled extension module.
           - os: ubuntu-latest
             python-version: '3.13'
             task: types
-          # Running tests in parallel can produce confusing logs and only saves a
-          # few minutes, so don't do it across the whole matrix. This section is
-          # not to save time in Github; it is here to make sure pytest-xdist keeps
-          # working so developers can keep saving time on their workstations.
+          # Non-gh pytest variant.
+          - os: ubuntu-latest
+            python-version: '3.13'
+            task: test
+          # Keep pytest-xdist exercised so it doesn't rot for developers.
           - os: ubuntu-latest
             python-version: '3.13'
             task: test-xdist
@@ -53,7 +113,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        # This is enough to find many quoting issues
         with:
           path: "./check out"
           persist-credentials: false
@@ -65,14 +124,30 @@ jobs:
           working-directory: './check out/'
           enable-cache: true
 
-      - name: Setup project
-        run: uv sync --frozen --directory "./check out/"
+      # Install dependency groups only — NOT the project. This avoids any
+      # cargo compile; the project itself comes from the prebuilt wheel.
+      - name: Install dependencies
+        working-directory: "./check out"
+        run: uv sync --frozen --no-install-project
+
+      - name: Download prebuilt wheel
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: wheel-${{ matrix.os }}
+          path: wheel
+
+      - name: Install prebuilt wheel
+        working-directory: "./check out"
+        shell: bash
+        run: uv pip install --no-deps ../wheel/*.whl
 
       - name: Display Python version
-        run: echo "import sys; print(sys.version); print(sys.platform)" | uv run -
+        working-directory: "./check out"
+        run: uv run --no-sync python -c "import sys; print(sys.version); print(sys.platform)"
 
       - name: Run ${{ matrix.task }} on ${{ matrix.os }} - ${{ matrix.python-version }}
-        run: uv run --frozen --directory "./check out/" --env-file=.github/http_env_block.conf poe ${{ matrix.task }}
+        working-directory: "./check out"
+        run: uv run --no-sync --env-file=.github/http_env_block.conf poe ${{ matrix.task }}
 
       - name: Upload coverage reports
         if: ${{ matrix.task == 'gh-test' }}
@@ -89,10 +164,43 @@ jobs:
           name: tests-${{ matrix.os }}-${{ matrix.python-version }}
           path: "./check out/junit.xml"
 
+  # ---------------------------------------------------------------------------
+  # Lint + format: pure-Python static checks (ruff). No build needed, so this
+  # never touches cargo — `--no-install-project` installs the tool deps only.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: "./check out"
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          python-version: '3.13'
+          working-directory: './check out/'
+          enable-cache: true
+
+      - name: Install tools (no project build)
+        working-directory: "./check out"
+        run: uv sync --frozen --no-install-project
+
+      - name: Lint
+        working-directory: "./check out"
+        run: uv run --no-sync poe gh-lint
+
+      - name: Format check
+        working-directory: "./check out"
+        run: uv run --no-sync poe gh-format
+
   test-report:
     name: Report test results
     runs-on: ubuntu-latest
-    needs: ["build"]
+    needs: ["test"]
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
