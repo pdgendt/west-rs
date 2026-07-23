@@ -38,6 +38,7 @@ cdylib. The right entry point for editable installs is
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -113,7 +114,19 @@ def _stage_cli_binary() -> None:
             "and re-run; the west wheel build requires a rust toolchain."
         ) from e
 
-    src = _ROOT / "target" / "release" / _BIN_NAME
+    # Honor CARGO_TARGET_DIR — cargo writes there instead of `./target`
+    # when it's set (CI pins it to a stable path so the build cache can
+    # survive the frontend's isolated build dir). A relative value is
+    # resolved against the cargo invocation's cwd (`_ROOT`), matching
+    # cargo's own resolution.
+    env_target = os.environ.get("CARGO_TARGET_DIR")
+    if env_target:
+        target_dir = Path(env_target)
+        if not target_dir.is_absolute():
+            target_dir = _ROOT / target_dir
+    else:
+        target_dir = _ROOT / "target"
+    src = target_dir / "release" / _BIN_NAME
     if not src.is_file():
         raise RuntimeError(
             f"cargo build succeeded but {src} is missing; "
