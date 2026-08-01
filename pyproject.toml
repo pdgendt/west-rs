@@ -127,7 +127,7 @@ test = [
     "tomli~=2.0; python_version < '3.11'",
 ]
 types = [
-    "mypy~=1.18",
+    "mypy>=1.18,<3.0",
 ]
 dev = [
     "poethepoet~=0.37",
