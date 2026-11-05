@@ -195,6 +195,17 @@ pythonpath = "src"
 # files migrate over.
 testpaths = ["tests"]
 
+[tool.poe.executor]
+# poe auto-selects its uv executor when uv.lock is present and runs
+# every task through `uv run`, which syncs the project environment
+# first. That rebuilds west from source on each task: locally it
+# overrides what `maturin develop` installed, and in CI it replaces the
+# prebuilt wheel under test — and needs maturin from PyPI, which the
+# network-blocking env file refuses, so every test job failed with
+# "Failed to build `west`". Run tasks straight inside the virtualenv
+# instead; `uv sync` and `poe build` own the environment.
+type = "virtualenv"
+
 # Build the rust artifacts the test suite needs:
 #   - `target/release/west` — the CLI binary. `tests/conftest.py`
 #     spawns this directly (NOT via `python -m west`), and prefers the
