@@ -47,7 +47,6 @@ release:
   release. It runs on ``workflow_dispatch`` and on pull requests that modify
   the workflow itself; trigger it by hand before a release.
 
-
 ``wheels.yml``
   Builds the distribution packages: the sdist plus one optimized ``abi3``
   wheel for each of Linux x86_64 and aarch64 (manylinux and musllinux), macOS
@@ -59,12 +58,25 @@ release:
   carries the same version (and that it matches the tag, when run on one),
   build a wheel from the sdist, and run the full pytest suite against the
   release wheels. Runs on ``v*`` tags, on pull requests that touch packaging
-  inputs, on demand, and when called from ``release.yml``.
+  inputs, on demand, and when called from ``release.yml``. It never publishes.
 
 ``release.yml``
-  Runs when a GitHub release is published. It calls ``package.yml``, attaches
-  the wheel to the GitHub release, and publishes everything to PyPI with
-  trusted publishing (no credentials stored in the repository).
+  The only workflow that publishes, and it is manual: run it from the Actions
+  tab on a release tag and choose ``testpypi`` or ``pypi``. It calls
+  ``wheels.yml``, so nothing is uploaded unless every build, check, and test
+  passed, then publishes through trusted publishing (OIDC, no stored
+  credentials). Publishing to PyPI requires a ``v*`` tag and runs in the
+  ``release`` environment, whose required reviewers must approve the upload.
+  For PyPI it also signs a build-provenance attestation for the artifacts,
+  recorded in the repository's attestation store, and creates the GitHub
+  release for the tag with generated notes, the artifacts, and the
+  attestation bundle. Verify a downloaded file with
+  ``gh attestation verify <file> --repo <owner>/<repo>``.
+
+  One-time setup lives outside the repository: the ``release`` and
+  ``testpypi`` environments (with required reviewers on ``release``) and a
+  trusted publisher on each index pointing at ``release.yml`` and the
+  matching environment name.
 
 ``codeql.yml``, ``scorecards.yml``, ``dependency-review.yml``
   Security scanning. Third-party actions are pinned to commit SHAs; keep that
@@ -98,7 +110,9 @@ Pre-release test plan
 
 3. Build alpha N (N=1 to start, then N=2 if you need more commits, etc.) by
    setting the version in ``Cargo.toml`` to ``X.Y.0-alphaN``, tagging, and
-   publishing a GitHub pre-release. See "Publishing a release" below.
+   running the ``Release`` workflow on the tag. See "Publishing a release"
+   below. Publish to TestPyPI first and install from there on one platform
+   before publishing the alpha to PyPI.
 
 4. Install the alpha on test platforms. ::
 
@@ -150,7 +164,7 @@ Pre-release test plan
 
    - tag the release (see "Tagging the release")
 
-   - publish the release on GitHub (see "Publishing a release")
+   - run the ``Release`` workflow on the tag (see "Publishing a release")
 
 9. Send email to the Zephyr lists, announce@ and users@, notifying them of the
    new release. Include ``git shortlog`` data of the new commits since the last
@@ -170,33 +184,48 @@ Create and push a GPG signed tag. ::
 Publishing a release
 --------------------
 
-Releases are built and uploaded by GitHub Actions. Go to
-https://github.com/zephyrproject-rtos/west/releases, click "Draft a new
-release", pick the tag you just pushed, mark alphas as pre-releases, and
-publish. ``release.yml`` then builds the artifacts, attaches the wheel to the
-release, and uploads the wheel and sdist to PyPI through trusted publishing.
+Releases are built and uploaded by GitHub Actions, and only on request:
 
-Known limitation: ``package.yml`` builds on ``ubuntu-latest`` only, so a
-release currently ships one Linux wheel plus the sdist. macOS and Windows
-users install from the sdist and compile locally. Extending the packaging
-matrix to match ``test.yml`` is an open item.
+1. Push the signed tag (see "Tagging the release"). Pushing a ``v*`` tag
+   already runs ``wheels.yml``, so the build and test results are visible
+   before anything is published.
 
-To build the artifacts manually, for example to inspect them before a
-release::
+2. Open the ``Release`` workflow in the Actions tab, click "Run workflow",
+   select the tag as the ref, and choose ``testpypi``. Check the result at
+   https://test.pypi.org/project/west/ and try an install from it::
 
-  git clean -ffdx
-  uv build
+     pip3 install --index-url https://test.pypi.org/simple/ west==X.Y.Z
 
-The ``git clean`` step is important: stale ``target/`` or ``.wheel-data/``
-contents can leak an old binary into the wheel. Verify the result::
+3. Run the workflow again on the same tag with ``pypi``. The build repeats,
+   the ``publish`` job waits for an approval from the ``release``
+   environment's reviewers, then uploads to PyPI, signs a build-provenance
+   attestation for the artifacts, and creates the GitHub release with the
+   artifacts and the attestation bundle attached. Tags with a hyphenated
+   suffix (``v2.0.0-alpha1``) are marked as pre-releases.
 
-  pip3 install -U dist/west-*.whl
+If the GitHub release needs editing afterwards (notes, title), edit it in the
+web UI; the artifacts stay attached.
+
+To build the wheels locally, for example to inspect them before tagging, use
+the same cibuildwheel configuration CI uses::
+
+  scripts/build-wheels.sh --platform macos
+  scripts/build-wheels.sh --platform linux
+
+The script copies the tree to a scratch directory without ``target/`` or
+``.venv/`` and writes the finished wheels to ``wheelhouse/``. Linux builds
+need a running Docker daemon; macOS builds need the python.org CPython 3.10
+installer (see the script header). For just the sdist, ``uv build --sdist`` in
+a clean tree is enough. Verify a wheel::
+
+  pip3 install -U wheelhouse/west-*.whl
   west --version
   python3 -c 'import west.version; print(west.version.__version__)'
 
 Both should print the version from ``Cargo.toml``, the first in Cargo form
-and the second in PEP 440 form. Manual uploads with ``twine`` are possible
-with the zephyr-project PyPI credentials but should not be needed.
+and the second in PEP 440 form. Do not upload by hand with ``twine``: that
+bypasses the build checks, the approval gate, and the attestations the
+workflow produces.
 
 Cutting a release branch
 ------------------------
