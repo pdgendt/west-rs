@@ -88,8 +88,30 @@ def _ensure_data_dir() -> None:
     (_DATA / "scripts").mkdir(parents=True, exist_ok=True)
 
 
+def _apply_cargo_workarounds() -> None:
+    """Adjust the environment every cargo invocation below inherits.
+
+    Called before the CLI build, so it also covers the maturin subprocess
+    that builds the extension module afterwards.
+    """
+    if sys.platform == "darwin":
+        # Cargo's release profile defaults to `-C strip=debuginfo`, which
+        # rustc implements with rust-objcopy. On toolchains predating the
+        # fix (rust-lang/rust#157750, LLVM update in rust-lang/rust#158410,
+        # mid-2026) that leaves the Mach-O LINKEDIT string pool misaligned
+        # whenever the image is linked against the macOS 27 SDK, and dyld
+        # on macOS 27 then refuses to load it: `import west._west_native`
+        # fails with "mis-aligned LINKEDIT string pool". Skip the strip
+        # instead. macOS keeps debug info in separate object files, so the
+        # cost is small: ~50 KB on the extension module, ~300 KB on the
+        # binary. Users building from the sdist with an older rustc get
+        # the same protection.
+        os.environ.setdefault("CARGO_PROFILE_RELEASE_STRIP", "none")
+
+
 def _stage_cli_binary() -> None:
     """Build the CLI binary and stage it for maturin's `data` directive."""
+    _apply_cargo_workarounds()
     try:
         subprocess.run(
             [

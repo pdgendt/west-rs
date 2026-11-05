@@ -274,6 +274,11 @@ Dependencies
 - The minimum supported Rust version is ``rust-version`` in ``Cargo.toml``.
   Raising it is a user-visible change for anyone installing from source;
   mention it in the release notes.
+- On macOS, ``_build_backend.py`` and the ``poe build`` task set
+  ``CARGO_PROFILE_RELEASE_STRIP=none``. Older rustc releases strip debug info
+  with a tool that leaves dylibs unloadable on macOS 27 (rust-lang/rust#157750,
+  fixed upstream in mid-2026). Once the minimum supported Rust version is past
+  the fix, both settings can go.
 - Python development dependencies are pinned by ``uv.lock``; the Python
   package itself has no runtime dependencies.
 - The PyO3 version is pinned in ``crates/west-cli/Cargo.toml`` with the
