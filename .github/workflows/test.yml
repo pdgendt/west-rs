@@ -41,7 +41,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       # This wheel is only used to run the test suite, so it doesn't need
       # optimized codegen. Compile the "release" profile at opt-level 0
-      # (~2-3x faster). package.yml / release.yml build the real optimized
+      # (~2-3x faster). wheels.yml / release.yml build the real optimized
       # wheel for distribution.
       CARGO_PROFILE_RELEASE_OPT_LEVEL: "0"
       CARGO_PROFILE_RELEASE_DEBUG: "false"
