@@ -18,8 +18,11 @@ junit.xml
 target/
 
 # Staging area for maturin's [tool.maturin] data directive.
-# Populated by scripts/build-wheel.sh; not source.
+# Populated by _build_backend.py; not source.
 .wheel-data/
+
+# cibuildwheel output (scripts/build-wheels.sh).
+wheelhouse/
 
 # Compiled extension module dropped by `maturin develop` into the
 # editable python source tree. Built artifact, not source.
