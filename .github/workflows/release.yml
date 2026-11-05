@@ -1,46 +1,152 @@
+# Publish a release. Manual only: a maintainer runs this from the
+# Actions tab on a release tag, choosing TestPyPI or PyPI.
+#
+#   1. guard    — PyPI requires the run to be on a `v*` tag.
+#   2. build    — wheels.yml: sdist + per-platform wheels, metadata
+#                 verification, build-from-sdist, and the full test
+#                 suite against the release wheels.
+#   3. publish  — trusted publishing (OIDC, no stored secrets) into
+#                 the chosen index. The job runs inside a GitHub
+#                 environment, so the `release` environment's required
+#                 reviewers gate the actual upload with an approval
+#                 click even though the trigger was already manual.
+#   4. github-release (PyPI only) — sign a build-provenance attestation
+#                 for the artifacts (recorded in the repository's
+#                 attestation store; verify with `gh attestation
+#                 verify <file> --repo <owner>/<repo>`), then create or
+#                 update the GitHub release for the tag with generated
+#                 notes, the artifacts, and the attestation bundle.
+#
+# One-time setup, outside this file:
+#   - Environments `release` and `testpypi` in the repository settings;
+#     put required reviewers on `release`.
+#   - Trusted publishers on pypi.org (environment `release`) and
+#     test.pypi.org (environment `testpypi`), both pointing at this
+#     repository and `release.yml`.
+#     https://docs.pypi.org/trusted-publishers/using-a-publisher/
 name: Release
 
-# This workflow follows Pypi guidelines for publishing using trusted publishers
-# See https://docs.pypi.org/trusted-publishers/using-a-publisher/ for more details.
-
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+        required: true
 
 permissions:
   contents: read
 
+# Never run two publishes to the same index at once, and never cancel
+# one that is in flight.
+concurrency:
+  group: release-${{ inputs.target }}
+  cancel-in-progress: false
+
 jobs:
-  package:
-    name: Package
-    uses: ./.github/workflows/package.yml
-
-  release:
-    name: Release
-    needs: [package]
+  guard:
+    name: Check ref
     runs-on: ubuntu-latest
-
-    # Make the GH environment explicit
-    environment: release
-
-    permissions:
-      # Mandatory for attaching assets to releases
-      contents: write
-      # Mandatory for trusted publishing
-      id-token: write
-
     steps:
-    - name: Download build artifacts
-      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-      with:
-        name: python-package-distributions
-        path: dist/
+      - name: Require a release tag for PyPI
+        env:
+          TARGET: ${{ inputs.target }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "target=$TARGET ref=$REF_TYPE/$REF_NAME"
+          if [ "$TARGET" = "pypi" ]; then
+            if [ "$REF_TYPE" != "tag" ]; then
+              echo "::error::Publishing to PyPI requires running this workflow on a tag, not on '$REF_NAME'."
+              exit 1
+            fi
+            case "$REF_NAME" in
+              v*) ;;
+              *)
+                echo "::error::Release tags are named vX.Y.Z; got '$REF_NAME'."
+                exit 1
+                ;;
+            esac
+          fi
 
-    # The assets can be attached to an existing release, if a matching tag is found
-    - name: Upload release assets
-      uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
-      with:
-        files: dist/*.whl
+  build:
+    name: Build
+    needs: [guard]
+    uses: ./.github/workflows/wheels.yml
 
-    - name: Publish package to PyPI
-      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+  publish:
+    name: Publish to ${{ inputs.target }}
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target == 'pypi' && 'release' || 'testpypi' }}
+      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/project/west/' || 'https://test.pypi.org/project/west/' }}
+    permissions:
+      # Mandatory for trusted publishing. Nothing else: this job does
+      # not even check out the repository.
+      id-token: write
+    steps:
+      - name: Download distribution packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: List distribution packages
+        run: ls -l dist
+
+      # Attestations (PEP 740) are generated and uploaded by default.
+      # TestPyPI runs are rehearsals; a version that is already there
+      # should not fail the run. PyPI gets the strict behavior.
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: ${{ inputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: ${{ inputs.target == 'testpypi' }}
+          print-hash: true
+
+  github-release:
+    name: GitHub release
+    needs: [publish]
+    if: inputs.target == 'pypi'
+    runs-on: ubuntu-latest
+    permissions:
+      # Create the release and upload its assets.
+      contents: write
+      # Sign the provenance attestation.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download distribution packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      # The action registers the attestation with GitHub's attestation
+      # service and writes the Sigstore bundle under RUNNER_TEMP; it
+      # does not touch dist/. Capture the bundle path so the release
+      # carries it too.
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      # Pre-release tags carry a hyphenated suffix in Cargo form
+      # (v2.0.0-alpha1). Those are marked pre-release and don't become
+      # "latest".
+      - name: Create or update the GitHub release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*
+            ${{ steps.attest.outputs.bundle-path }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
