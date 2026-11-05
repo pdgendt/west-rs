@@ -1,5 +1,67 @@
 Notes for maintainers.
 
+Versioning
+----------
+
+The project version is declared once, in the ``[workspace.package]`` table of
+the root ``Cargo.toml``. Both crates inherit it with ``version.workspace =
+true``, and ``pyproject.toml`` declares ``dynamic = ["version"]`` so maturin
+reads the same value at build time. Bump it there and nowhere else, then run
+``cargo build`` (or ``cargo update -w``) so ``Cargo.lock`` records the new
+crate versions. Commit both files together: the wheel build runs cargo with
+``--locked`` and fails on a stale lockfile.
+
+Cargo uses semver pre-release syntax and maturin converts it to PEP 440 for
+the wheel, so one source produces both spellings:
+
+================  ==============  ====================
+Cargo.toml        Python / PyPI   Meaning
+================  ==============  ====================
+``2.0.0-alpha1``  ``2.0.0a1``     first alpha of 2.0.0
+``2.0.0``         ``2.0.0``       release
+``2.0.99``        ``2.0.99``      main branch after cutting ``v2.0-branch``
+================  ==============  ====================
+
+``west.manifest.SCHEMA_VERSION`` in ``src/west/manifest.py`` is the logical
+manifest schema version. Update it only when a release introduces manifest
+syntax that earlier west versions cannot parse; see "Cutting a release branch"
+below.
+
+Continuous integration
+----------------------
+
+All workflows live in ``.github/workflows/``. The ones that matter for a
+release:
+
+``test.yml``
+  Builds one ``abi3`` wheel per OS (Linux, macOS, Windows) with ``uv build``,
+  then installs that prebuilt wheel in a matrix of Python 3.10 through 3.14
+  and runs the ``poe`` tasks against it. The wheel is compiled at
+  ``opt-level = 0`` to keep the job fast; it is never published. Lint and
+  format checks run in a separate job that does not compile anything.
+  Coverage goes to Codecov.
+
+``test-distros.yml``
+  Runs the suite inside containers for Arch, Debian stable and testing,
+  Fedora latest and rawhide, openSUSE Tumbleweed, and the Ubuntu development
+  release. It runs on ``workflow_dispatch`` and on pull requests that modify
+  the workflow itself; trigger it by hand before a release.
+
+
+``package.yml``
+  Builds the distribution artifacts with ``uv build`` and uploads them as a
+  workflow artifact. Runs on every push and pull request, and is reused by
+  ``release.yml``.
+
+``release.yml``
+  Runs when a GitHub release is published. It calls ``package.yml``, attaches
+  the wheel to the GitHub release, and publishes everything to PyPI with
+  trusted publishing (no credentials stored in the repository).
+
+``codeql.yml``, ``scorecards.yml``, ``dependency-review.yml``
+  Security scanning. Third-party actions are pinned to commit SHAs; keep that
+  policy when touching workflows.
+
 Pre-release test plan
 ---------------------
 
@@ -13,37 +75,34 @@ Pre-release test plan
 
 1. Make testing happy on the following first-party non-Linux platforms:
 
-   - Windows 10
+   - Windows 10 or 11
    - the latest macOS
 
    Do this by hand and check for any anomalous warnings in the output.
-   Do not just trust CI.
+   Do not just trust CI. Run both suites::
 
-2. Make testing happy on other popular Linux distributions:
+     cargo test --workspace
+     uv run poe all
 
-   - Arch
-   - the latest Ubuntu development release
-   - Debian stable
-   - Debian testing
-   - the latest Fedora release
-   - the latest Fedora rawhide release
-   - the rolling openSUSE Tumbleweed release
+2. Make testing happy on other popular Linux distributions by dispatching the
+   ``test-distros.yml`` workflow on the release branch from the GitHub Actions
+   tab.
 
-   Automated infrastructure for doing this using docker is in the
-   test-distros.yml workflow action on Github.
-
-3. Build alpha N (N=1 to start, then N=2 if you need more commits, etc.) and
-   upload to pypi. See "Building and uploading the release wheels" below for
-   a procedure.
+3. Build alpha N (N=1 to start, then N=2 if you need more commits, etc.) by
+   setting the version in ``Cargo.toml`` to ``X.Y.0-alphaN``, tagging, and
+   publishing a GitHub pre-release. See "Publishing a release" below.
 
 4. Install the alpha on test platforms. ::
 
-     pip3 install west==X.YaN
+     pip3 install west==X.Y.0aN
+
+   On platforms without a prebuilt wheel this compiles from the sdist; confirm
+   that works too, since end users on those platforms will hit the same path.
 
 5. Create and update a default (Zephyr) workspace on all of the platforms from
    1., using the installed alpha::
 
-     west init zephyrproject
+     west init -u https://github.com/zephyrproject-rtos/zephyr zephyrproject
      cd zephyrproject
      west update
 
@@ -51,8 +110,10 @@ Pre-release test plan
    default branch used by zephyr itself.
 
 6. Do the following Zephyr specific testing in the Zephyr workspace on all of
-   the platforms from 1. Skip QEMU tests on non-Linux platforms, and make sure
-   ZEPHYR_BASE is unset in the calling environment. ::
+   the platforms from 1. These are extension commands, so they exercise the
+   Rust-to-Python dispatch path as well as the Zephyr code. Skip QEMU tests on
+   non-Linux platforms, and make sure ZEPHYR_BASE is unset in the calling
+   environment. ::
 
      west build -b qemu_x86 -s zephyr/samples/hello_world -d build-qemu-x86
      west build -d build-qemu-x86 -t run
@@ -62,7 +123,7 @@ Pre-release test plan
 
      # This example uses a Nordic board. Do this for as many boards
      # as you have access to / volunteers for.
-     west build -b nrf52dk_nrf52832 -s zephyr/samples/hello_world -d build-nrf52
+     west build -b nrf52dk/nrf52832 -s zephyr/samples/hello_world -d build-nrf52
      west flash -d build-nrf52
      west debug -d build-nrf52
      west debugserver -d build-nrf52
@@ -70,43 +131,22 @@ Pre-release test plan
 
    (It's still a pass if ``west build`` requires ``--pristine``.)
 
-7. Assuming that all went well (if it didn't, go fix it and repeat):
+7. If you have a v1 workspace around, run ``west config migrate`` in it and
+   check that ``west list`` and ``west update`` behave the same before and
+   after. This is the path every existing user takes once.
 
-   - update version in pyproject.toml to 'X.Y.Z' (i.e. drop the 'aN' suffix
-     that denotes alpha N)
+8. Assuming that all went well (if it didn't, go fix it and repeat):
 
-   - tag the release on GitHub (see "Tagging the release" for a procedure)
+   - set the version in ``Cargo.toml`` to ``X.Y.Z`` (drop the ``-alphaN``
+     suffix), update ``Cargo.lock``, commit
 
-   - create a release on GitHub from the new tag by going to
-     https://github.com/zephyrproject-rtos/west/releases
-     clicking "Draft a new release", and following instructions
+   - tag the release (see "Tagging the release")
 
-   - upload the release artifacts to PyPI (see "Building and uploading the
-     release wheels" for a procedure)
+   - publish the release on GitHub (see "Publishing a release")
 
-8. Send email to the Zephyr lists, announce@ and users@, notifying them of the
-   new release. Include 'git shortlog' data of the new commits since the last
+9. Send email to the Zephyr lists, announce@ and users@, notifying them of the
+   new release. Include ``git shortlog`` data of the new commits since the last
    release to give credit to all contributors.
-
-Building and uploading the release wheels
------------------------------------------
-
-Creating Pypi releases is done automatically from Github. After publishing
-a release on Github a release build is packaged and uploaded with the
-version specified in pyproject.toml.
-
-To do these steps manually, you need the zephyr-project PyPI credentials
-for the 'twine upload' command. ::
-
-  git clean -ffdx
-  pip3 install --upgrade build twine
-  python -m build
-  twine upload -u zephyr-project dist/*
-
-The 'git clean' step is important. We've anecdotally observed broken wheels
-being generated from dirty repositories.
-
-Check out [packaging.python.org](https://packaging.python.org/en/latest/tutorials/packaging-projects/#generating-distribution-archives) for more detailed instructions.
 
 Tagging the release
 -------------------
@@ -118,6 +158,37 @@ Create and push a GPG signed tag. ::
   Signed-off-by: Your Name <your.name@example.com>'
 
   git push origin vX.Y.Z
+
+Publishing a release
+--------------------
+
+Releases are built and uploaded by GitHub Actions. Go to
+https://github.com/zephyrproject-rtos/west/releases, click "Draft a new
+release", pick the tag you just pushed, mark alphas as pre-releases, and
+publish. ``release.yml`` then builds the artifacts, attaches the wheel to the
+release, and uploads the wheel and sdist to PyPI through trusted publishing.
+
+Known limitation: ``package.yml`` builds on ``ubuntu-latest`` only, so a
+release currently ships one Linux wheel plus the sdist. macOS and Windows
+users install from the sdist and compile locally. Extending the packaging
+matrix to match ``test.yml`` is an open item.
+
+To build the artifacts manually, for example to inspect them before a
+release::
+
+  git clean -ffdx
+  uv build
+
+The ``git clean`` step is important: stale ``target/`` or ``.wheel-data/``
+contents can leak an old binary into the wheel. Verify the result::
+
+  pip3 install -U dist/west-*.whl
+  west --version
+  python3 -c 'import west.version; print(west.version.__version__)'
+
+Both should print the version from ``Cargo.toml``, the first in Cargo form
+and the second in PEP 440 form. Manual uploads with ``twine`` are possible
+with the zephyr-project PyPI credentials but should not be needed.
 
 Cutting a release branch
 ------------------------
@@ -133,7 +204,7 @@ Summary of what happens:
 
 - after:
 
-  - vX.Y-branch exists and is at version X.Y.0a1
+  - vX.Y-branch exists and is at version X.Y.0-alpha1
   - main is at version X.Y.99
   - west.manifest.SCHEMA_VERSION may be updated
 
@@ -158,9 +229,13 @@ Summary of what happens:
    main branch and get it reviewed and merged. (This requires a PR and review
    even though the rest of the steps don't.)
 
+   Note that the Rust core currently parses ``manifest.version`` but does not
+   yet reject versions outside the supported window; ``TODO.md`` tracks this.
+   Until that lands, a SCHEMA_VERSION bump only affects the Python API.
+
    **Don't** introduce incompatible manifest changes in patch versions.
-   That violates semantic versioning. Example: if v0.7.3 can parse a manifest,
-   v0.7.2 should be able to parse it, too, and with the same results.
+   That violates semantic versioning. Example: if v2.1.3 can parse a manifest,
+   v2.1.2 should be able to parse it, too, and with the same results.
 
 2. Create and push the release branch for minor version vX.Y.0, which is named
    "vX.Y-branch"::
@@ -174,16 +249,34 @@ Summary of what happens:
    being backported from main (or the other way around in case of an urgent
    hotfix).
 
-3. In vX.Y-branch, in src/west/version.py, set __version__ to X.Y.0a1.
-   Push this to origin/vX.Y-branch. You don't need a PR for this.
+3. In vX.Y-branch, set the version in ``Cargo.toml`` to ``X.Y.0-alpha1``,
+   update ``Cargo.lock``, and push to origin/vX.Y-branch. You don't need a PR
+   for this.
 
-4. In the main branch, set version in pyproject.toml to X.Y.99.
-   Push this to origin/main. You don't need a PR for this.
+4. In the main branch, set the version in ``Cargo.toml`` to ``X.Y.99``, update
+   ``Cargo.lock``, and push to origin/main. You don't need a PR for this.
 
 5. Create an annotated tag vX.Y.99 which points to the main branch commit you
    just created in the previous step. Push it to origin/main. You don't need a
-   PR for this. See refs/tags/v0.12.99 for an example. (This makes 'git
-   describe' output easy to read during development.)
+   PR for this. (This makes ``git describe`` output easy to read during
+   development.)
 
 From this point forward, the main branch is moving independently from the
 release branch. Do the release prep work in the release branch.
+
+Dependencies
+------------
+
+- Rust dependencies are pinned by ``Cargo.lock``, and the wheel build runs
+  cargo with ``--locked`` so an sdist install gets exactly the audited crate
+  versions. Update them deliberately with ``cargo update`` and run both test
+  suites.
+- The minimum supported Rust version is ``rust-version`` in ``Cargo.toml``.
+  Raising it is a user-visible change for anyone installing from source;
+  mention it in the release notes.
+- Python development dependencies are pinned by ``uv.lock``; the Python
+  package itself has no runtime dependencies.
+- The PyO3 version is pinned in ``crates/west-cli/Cargo.toml`` with the
+  ``abi3-py310`` feature. Changing the abi3 floor changes which Pythons the
+  wheel supports; keep it in step with ``requires-python`` in
+  ``pyproject.toml`` and the classifiers.
