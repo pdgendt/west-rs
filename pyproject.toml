@@ -278,3 +278,44 @@ env = {PYTHONIOENCODING = "utf-8"}
 # blocked and the project installed from a prebuilt wheel.
 [tool.poe.tasks.gh-test-xdist]
 ref = "gh-test -n auto"
+
+# Release wheel builds — shared by `.github/workflows/wheels.yml` and
+# `scripts/build-wheels.sh` so a local run produces the same artifacts
+# CI does. cibuildwheel drives the PEP 517 frontend, which routes
+# through `_build_backend.py`, so every wheel carries both the
+# `_west_native` extension and the `west` binary. It then repairs
+# (auditwheel / delocate / delvewheel), audits the abi3 claim
+# (abi3audit), and smoke-tests each wheel in a fresh venv.
+[tool.cibuildwheel]
+# The extension is `abi3-py310`: one wheel per platform covers every
+# CPython from 3.10 up, so build against 3.10 only.
+build = "cp310-*"
+# 64-bit only. `auto` would add i686 / win32, which need a 32-bit rust
+# toolchain for no audience.
+archs = "auto64"
+build-verbosity = 1
+# Both halves of the wheel must work: the binary on PATH and the
+# extension importable. `west --version` is the cheapest end-to-end
+# check that the staged `.data/scripts/west` is the right file and
+# dynamically links only against things the target platform has.
+test-command = "west --version && python -c \"import west.manifest, west.configuration, west.util\""
+
+[tool.cibuildwheel.linux]
+# manylinux / musllinux containers don't ship rust. Install it once per
+# container (before-all runs once per image, not once per wheel) and
+# put cargo on PATH for the build steps. Keep the toolchain at or above
+# `rust-version` in Cargo.toml — stable always is.
+before-all = "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+
+# cibuildwheel defaults the deployment target to the interpreter's own
+# floor, 10.9 for x86_64 CPython 3.10. rustc cannot target anything
+# below 10.12 and silently raises it, so the binary and extension end
+# up newer than the wheel's `macosx_10_9` tag and delocate refuses the
+# wheel ("Library dependencies do not satisfy target MacOS version").
+# Pin the x86_64 target to rustc's floor. Scoped to that identifier
+# only: arm64's floor is 11.0, and setting 10.12 there just makes
+# cibuildwheel warn that it bumped the value.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
