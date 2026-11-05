@@ -1,0 +1,278 @@
+# Build, verify, and test the distribution packages: one sdist plus a
+# pre-compiled abi3 wheel per platform. Nothing here publishes; the
+# manual `release.yml` workflow reuses this one via `workflow_call`
+# and then uploads what it produced.
+#
+# Runs on pull requests that touch packaging inputs, on release tags,
+# on demand, and when called from release.yml. The release profile
+# (fat LTO, one codegen unit) makes each wheel take several minutes, so
+# ordinary pushes are left to test.yml, which compiles a cheap
+# opt-level 0 wheel for the test matrix instead.
+name: Distribution packages
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/wheels.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "_build_backend.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "src/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Source distribution. Built once; it is what pip compiles on platforms
+  # without a matching wheel, and what the `sdist-build` job checks.
+  # ---------------------------------------------------------------------------
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          python-version: "3.13"
+
+      - name: Build sdist
+        run: uv build --sdist --out-dir dist
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Wheels. One native runner per (OS, CPU) pair — the build backend runs
+  # `cargo build` for the host, so cross-compilation is deliberately
+  # avoided. Linux runners produce both manylinux and musllinux wheels
+  # from containers; cibuildwheel installs rust inside them (see
+  # `[tool.cibuildwheel.linux]` in pyproject.toml).
+  # ---------------------------------------------------------------------------
+  wheels:
+    name: wheel (${{ matrix.id }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: linux-x86_64,   runner: ubuntu-latest }
+          - { id: linux-aarch64,  runner: ubuntu-24.04-arm }
+          - { id: macos-x86_64,   runner: macos-15-intel }
+          - { id: macos-arm64,    runner: macos-latest }
+          - { id: windows-x86_64, runner: windows-latest }
+          - { id: windows-arm64,  runner: windows-11-arm }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # macOS and Windows wheels are compiled on the runner itself.
+      # Hosted images ship rustup; the install branch covers images that
+      # don't (the rustup script handles Windows under Git Bash). Linux
+      # runners only orchestrate containers and skip this.
+      - name: Set up rust
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      # Keep the version in step with CIBW_VERSION in
+      # scripts/build-wheels.sh so local and CI builds agree.
+      - name: Build wheels
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
+        with:
+          output-dir: wheelhouse
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: dist-wheel-${{ matrix.id }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Metadata checks over the complete set: twine's long-description and
+  # metadata validation, exactly one version across every file, and —
+  # on a tag — that version must be the tag's (PEP 440 normalized, so
+  # Cargo's `2.0.0-alpha1` and the wheel's `2.0.0a1` compare equal).
+  # ---------------------------------------------------------------------------
+  verify:
+    name: verify metadata
+    needs: [sdist, wheels]
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout in this job: nothing to cache, workdir empty by design.
+      - uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          python-version: "3.13"
+          enable-cache: false
+          ignore-empty-workdir: true
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -l dist
+
+      - name: twine check
+        run: uvx twine check --strict dist/*
+
+      - name: Check versions
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          uv run --no-project --with packaging python - <<'PY'
+          import os, re, sys
+          from pathlib import Path
+          from packaging.utils import parse_sdist_filename, parse_wheel_filename
+          from packaging.version import Version
+
+          versions = set()
+          for f in Path("dist").iterdir():
+              if f.suffix == ".whl":
+                  name, ver, _, tags = parse_wheel_filename(f.name)
+                  tagset = {str(t) for t in tags}
+                  if not any(t.startswith("cp310-abi3-") for t in tagset):
+                      sys.exit(f"{f.name}: expected a cp310-abi3 wheel, got {sorted(tagset)}")
+              else:
+                  name, ver = parse_sdist_filename(f.name)
+              if name != "west":
+                  sys.exit(f"{f.name}: unexpected distribution name {name!r}")
+              versions.add(ver)
+          if len(versions) != 1:
+              sys.exit(f"artifacts disagree on the version: {sorted(map(str, versions))}")
+          (version,) = versions
+          print(f"version: {version}")
+
+          if os.environ["REF_TYPE"] == "tag":
+              tag = os.environ["REF_NAME"]
+              expected = Version(re.sub(r"^v", "", tag))
+              if expected != version:
+                  sys.exit(f"tag {tag} normalizes to {expected}, artifacts are {version}")
+              print(f"tag {tag} matches")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # The sdist must compile on a machine with only a rust toolchain and
+  # pip. Users on platforms without a wheel take exactly this path. The
+  # release profile is overridden to opt-level 0: this checks that the
+  # sdist is complete, not that it is fast.
+  # ---------------------------------------------------------------------------
+  sdist-build:
+    name: build from sdist
+    needs: [sdist]
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "false"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+    steps:
+      # No checkout in this job: nothing to cache, workdir empty by design.
+      - uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          python-version: "3.13"
+          enable-cache: false
+          ignore-empty-workdir: true
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist-sdist
+          path: sdist
+
+      - name: Build a wheel from the sdist
+        run: uv build --wheel --out-dir from-sdist sdist/*.tar.gz
+
+      - name: Smoke test
+        run: |
+          uv venv .venv
+          uv pip install --python .venv --no-deps from-sdist/*.whl
+          .venv/bin/west --version
+          .venv/bin/python -c "import west.manifest, west.configuration, west.util"
+
+  # ---------------------------------------------------------------------------
+  # Full pytest suite against the release wheels, on the primary
+  # platforms. cibuildwheel's test-command already smoke-tested every
+  # wheel; this runs the real suite against the optimized build the user
+  # will install. Mirrors the install steps in test.yml.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test wheel (${{ matrix.id }})
+    needs: [wheels]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: linux-x86_64,   runner: ubuntu-latest,    glob: "*manylinux*.whl" }
+          - { id: linux-aarch64,  runner: ubuntu-24.04-arm, glob: "*manylinux*.whl" }
+          - { id: macos-arm64,    runner: macos-latest,     glob: "*.whl" }
+          - { id: windows-x86_64, runner: windows-latest,   glob: "*.whl" }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: "./check out"
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
+        with:
+          python-version: "3.13"
+          working-directory: "./check out/"
+          enable-cache: true
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist-wheel-${{ matrix.id }}
+          path: wheel
+
+      # Dependency groups only; the project itself comes from the wheel.
+      - name: Install test dependencies
+        working-directory: "./check out"
+        run: uv sync --frozen --no-install-project
+
+      - name: Install wheel
+        working-directory: "./check out"
+        shell: bash
+        env:
+          GLOB: ${{ matrix.glob }}
+        run: uv pip install --no-deps ../wheel/$GLOB
+
+      # `gh-test` runs pytest with `-o pythonpath=` so the installed
+      # package (not src/) is under test, and has no cargo build
+      # dependency. `tests/conftest.py` finds the binary on PATH.
+      - name: Run test suite
+        working-directory: "./check out"
+        run: uv run --no-sync --env-file=.github/http_env_block.conf poe gh-test

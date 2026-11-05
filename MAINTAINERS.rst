@@ -48,10 +48,18 @@ release:
   the workflow itself; trigger it by hand before a release.
 
 
-``package.yml``
-  Builds the distribution artifacts with ``uv build`` and uploads them as a
-  workflow artifact. Runs on every push and pull request, and is reused by
-  ``release.yml``.
+``wheels.yml``
+  Builds the distribution packages: the sdist plus one optimized ``abi3``
+  wheel for each of Linux x86_64 and aarch64 (manylinux and musllinux), macOS
+  x86_64 and arm64, and Windows x64 and arm64. Each wheel is built on a native
+  runner with `cibuildwheel <https://cibuildwheel.pypa.io/>`_, using the
+  ``[tool.cibuildwheel]`` settings in ``pyproject.toml``, then repaired,
+  audited for abi3 compliance, and smoke-tested in a fresh virtual
+  environment. Follow-up jobs run ``twine check``, verify that every file
+  carries the same version (and that it matches the tag, when run on one),
+  build a wheel from the sdist, and run the full pytest suite against the
+  release wheels. Runs on ``v*`` tags, on pull requests that touch packaging
+  inputs, on demand, and when called from ``release.yml``.
 
 ``release.yml``
   Runs when a GitHub release is published. It calls ``package.yml``, attaches
