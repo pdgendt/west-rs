@@ -229,6 +229,12 @@ type = "virtualenv"
 # `pip install .` (which goes through the maturin build backend) and
 # would double-build if `build` were chained.
 [tool.poe.tasks.build]
+# CARGO_PROFILE_RELEASE_STRIP=none mirrors `_build_backend.py`: on macOS
+# 27 an older rustc's debuginfo strip produces dylibs dyld refuses to
+# load (rust-lang/rust#157750). `maturin develop` bypasses the backend,
+# so the dev build needs the same setting. Harmless elsewhere; dev
+# artifacts are never shipped.
+env = {CARGO_PROFILE_RELEASE_STRIP = "none"}
 sequence = [
     {cmd = "cargo build --release -p west-cli --bin west"},
     # Maturin compiles the cdylib with `--features pyo3` and
