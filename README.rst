@@ -331,6 +331,22 @@ version from 3.10 up. Install it with::
 You can ``pip3 uninstall west`` to remove this wheel before re-installing the
 version from PyPI, etc.
 
+The wheels published to PyPI are built with `cibuildwheel
+<https://cibuildwheel.pypa.io/>`_ so that they are repaired for broad
+compatibility (``manylinux``, ``musllinux``, macOS deployment targets) and
+smoke-tested before upload. To produce the same wheels locally::
+
+  scripts/build-wheels.sh --platform macos
+  scripts/build-wheels.sh --platform linux      # needs docker
+  scripts/build-wheels.sh --only cp310-manylinux_x86_64   # a single wheel
+
+Finished wheels land in ``wheelhouse/``. Linux builds need a running Docker
+daemon. macOS builds need the python.org CPython 3.10 installer, because
+cibuildwheel compiles against the framework interpreter and will not install
+one itself outside CI. The configuration is the ``[tool.cibuildwheel]`` table
+in ``pyproject.toml``; ``.github/workflows/wheels.yml`` runs it across all
+supported platforms.
+
 Quick install from Git
 ~~~~~~~~~~~~~~~~~~~~~~
 
