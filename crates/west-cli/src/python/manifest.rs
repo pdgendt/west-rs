@@ -387,7 +387,8 @@ impl ManifestRepo {
 /// data-layer parsing only; workspace concerns (`topdir`,
 /// `manifest.path`/`manifest.file` config, ZEPHYR-style imports) sit
 /// in the python `west.manifest` wrapper.
-#[pyclass(name = "Manifest", module = "west._west_native", subclass, unsendable)]
+// Not `unsendable` — see the note on `Configuration` in config.rs.
+#[pyclass(name = "Manifest", module = "west._west_native", subclass)]
 pub struct Manifest {
     inner: core::Manifest,
 }
@@ -799,7 +800,8 @@ fn project_filter_error_to_py(err: ProjectFilterError) -> PyErr {
 /// `west.manifest.Manifest` wrapper holds one of these so the
 /// project-filter rule is applied consistently in python flows — the
 /// rust CLI commands route through the same `LoadedManifest::is_active`.
-#[pyclass(name = "LoadedManifest", module = "west._west_native", unsendable)]
+// Not `unsendable` — see the note on `Configuration` in config.rs.
+#[pyclass(name = "LoadedManifest", module = "west._west_native")]
 pub struct LoadedManifest {
     inner: CoreLoadedManifest,
 }
