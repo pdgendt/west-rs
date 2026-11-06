@@ -12,7 +12,18 @@ pub fn run() -> ExitCode {
     };
     match west_core::topdir::topdir(&cwd) {
         Ok(p) => {
-            println!("{}", p.display());
+            // v1 printed `PurePath(topdir).as_posix()`: forward slashes
+            // on every platform. Scripts splice this into git commands
+            // and manifest paths, both of which prefer `/`.
+            let s = p.to_string_lossy();
+            println!(
+                "{}",
+                if cfg!(windows) {
+                    s.replace('\\', "/")
+                } else {
+                    s.into_owned()
+                }
+            );
             exit::SUCCESS
         }
         Err(e) => {
