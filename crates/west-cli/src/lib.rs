@@ -19,6 +19,10 @@ mod python;
 #[derive(Parser, Debug)]
 #[command(
     name = "west",
+    // Clap derives the usage line's program name from argv[0] unless
+    // told otherwise; on Windows that is whatever PATHEXT lookup found
+    // (`west.EXE`), which leaks into every usage line and help text.
+    bin_name = "west",
     version,
     about = "The Zephyr RTOS meta-tool",
     // We provide our own `Help` subcommand (commands::help) so we
