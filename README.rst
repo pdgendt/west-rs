@@ -1,5 +1,5 @@
-.. image:: https://img.shields.io/pypi/pyversions/west?logo=python
-   :target: https://pypi.org/project/west/
+.. image:: https://img.shields.io/pypi/pyversions/west-rs?logo=python
+   :target: https://pypi.org/project/west-rs/
 
 .. image:: https://api.securityscorecards.dev/projects/github.com/zephyrproject-rtos/west/badge
    :target: https://scorecard.dev/viewer/?uri=github.com/zephyrproject-rtos/west
@@ -29,9 +29,14 @@ Installation
 
 Using pip::
 
-  pip3 install west
+  pip3 install west-rs
 
-(Use ``pip3 uninstall west`` to uninstall it.)
+(Use ``pip3 uninstall west-rs`` to uninstall it.)
+
+The distribution is named ``west-rs``, but it is a drop-in replacement for
+the v1 ``west`` package: it provides the same ``west`` command and the same
+``west`` Python package. Uninstall v1 first (``pip3 uninstall west``); the two
+cannot coexist in one environment because they ship the same files.
 
 The wheel contains the ``west`` binary, which pip places on your ``PATH``, and
 the Python package. One ``abi3`` wheel covers every supported Python version
@@ -40,11 +45,11 @@ the source distribution, which requires a Rust toolchain (see `Prerequisites`_).
 
 Other ways to install:
 
-- ``uv tool install west`` installs the same wheel into an isolated
+- ``uv tool install west-rs`` installs the same wheel into an isolated
   environment managed by `uv <https://docs.astral.sh/uv/>`_. Extension
   commands run in a separate interpreter (see below), so point
   ``WEST_PYTHON`` at that environment's Python, for example
-  ``~/.local/share/uv/tools/west/bin/python``, or install west into the
+  ``~/.local/share/uv/tools/west-rs/bin/python``, or install west into the
   virtual environment you use for Zephyr instead.
 - ``cargo install --path crates/west-cli`` from a checkout builds only the
   ``west`` binary, with no Python dependency at all. All built-in commands
@@ -321,15 +326,15 @@ To build the wheel and the source distribution::
 
   uv build
 
-This creates ``dist/west-<version>-cp310-abi3-<platform>.whl`` and
-``dist/west-<version>.tar.gz``. The wheel is platform-specific because it
+This creates ``dist/west_rs-<version>-cp310-abi3-<platform>.whl`` and
+``dist/west_rs-<version>.tar.gz``. The wheel is platform-specific because it
 contains native code, but a single wheel per platform serves every Python
 version from 3.10 up. Install it with::
 
-  pip3 install -U dist/west-*.whl
+  pip3 install -U dist/west_rs-*.whl
 
-You can ``pip3 uninstall west`` to remove this wheel before re-installing the
-version from PyPI, etc.
+You can ``pip3 uninstall west-rs`` to remove this wheel before re-installing
+the version from PyPI, etc.
 
 The wheels published to PyPI are built with `cibuildwheel
 <https://cibuildwheel.pypa.io/>`_ so that they are repaired for broad
@@ -355,7 +360,7 @@ branch, tag, or pull request with a single command. This compiles the Rust
 code locally, so it needs a Rust toolchain, and the first build takes a few
 minutes. Examples::
 
-  pip3 uninstall west
+  pip3 uninstall west-rs
   # Pull request 830
   pip3 install https://github.com/zephyrproject-rtos/west/archive/pull/830/head.zip
   # Someone's random version
