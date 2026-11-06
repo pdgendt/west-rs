@@ -49,12 +49,14 @@ pub enum ConfigFile {
     LOCAL = 4,
 }
 
-#[pyclass(
-    name = "Configuration",
-    module = "west._west_native",
-    unsendable,
-    subclass
-)]
+// Not `unsendable`: that would make dropping the object on any thread
+// other than the one that created it a RuntimeError, and python's
+// cyclic GC can run on any thread. On Windows `subprocess.communicate`
+// pumps pipes from helper threads, so a GC pass triggered there used
+// to raise "Configuration is unsendable, but is being dropped on
+// another thread" as an unraisable exception. The wrapped data is
+// plain Send + Sync Rust, so the restriction buys nothing.
+#[pyclass(name = "Configuration", module = "west._west_native", subclass)]
 pub struct Configuration {
     inner: west_core::config::Configuration,
     resolved: ResolvedConfig,
