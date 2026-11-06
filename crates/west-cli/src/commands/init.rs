@@ -547,7 +547,45 @@ fn resolve_topdir_remote(args: &InitArgs) -> Result<PathBuf, InitError> {
 }
 
 fn canonicalize_or_keep(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    p.canonicalize()
+        .map(strip_verbatim_prefix)
+        .unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// `std::fs::canonicalize` on Windows returns extended-length paths
+/// (`\\?\C:\...`). They work for the filesystem, but they leak into
+/// user-facing messages ("already initialized in \\?\C:\...") and
+/// into comparisons with paths the user typed. Rewrite the verbatim
+/// disk and UNC prefixes back to their plain forms.
+#[cfg(windows)]
+fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
+    use std::path::{Component, Prefix};
+
+    let mut comps = p.components();
+    let Some(Component::Prefix(pc)) = comps.next() else {
+        return p;
+    };
+    let head = match pc.kind() {
+        Prefix::VerbatimDisk(d) => format!("{}:\\", d as char),
+        Prefix::VerbatimUNC(server, share) => format!(
+            "\\\\{}\\{}\\",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        ),
+        _ => return p,
+    };
+    let mut out = PathBuf::from(head);
+    for c in comps {
+        if let Component::Normal(n) = c {
+            out.push(n);
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
+    p
 }
 
 /// Used only for equality comparison in the local-mode validation. We
