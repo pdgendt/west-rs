@@ -1198,18 +1198,28 @@ impl<'a> Resolver<'a> {
                 effective_prefix.join(&project.path)
             };
             let mut project = project;
+            // Reject absolute paths on the raw value, before `..`
+            // collapsing can eat the root: `posix_clean` treats a
+            // Windows drive prefix as an ordinary segment, so
+            // `C:\a\..\..\foo` would otherwise normalize to the
+            // relative-looking `foo` and slip past the check below.
+            let raw_str = prefixed_path.to_string_lossy();
+            if is_absolute_path_str(&raw_str) {
+                return Err(ManifestError::AbsoluteProjectPath {
+                    project: project.name.clone(),
+                    path: raw_str.into_owned(),
+                });
+            }
             // Canonicalize the stored path so `{path}` rendering, the
             // selector-by-path lookup, and any downstream consumer all
             // see a single normal form. Collapses `subdir///foo`,
             // `subdir/./foo`, and `subdir/inner/../foo` to their
-            // obvious equivalents; backslashes inside a segment
-            // (legal filename chars on POSIX) are preserved.
-            project.path = prefixed_path.clean();
+            // obvious equivalents and, as v1 did, always uses `/` as
+            // the separator — on Windows too, where `Path::join` and
+            // `path_clean` would otherwise have produced `\`.
+            project.path = posix_clean(&prefixed_path);
             let path_str = project.path.to_string_lossy().into_owned();
-            if Path::new(&path_str).is_absolute()
-                || path_str.starts_with('/')
-                || path_str.starts_with('\\')
-            {
+            if is_absolute_path_str(&path_str) {
                 return Err(ManifestError::AbsoluteProjectPath {
                     project: project.name.clone(),
                     path: path_str,
@@ -1719,6 +1729,49 @@ pub fn relative_path_escapes_root(path: &Path) -> bool {
         return true;
     }
     path.clean().starts_with("..")
+}
+
+/// Whether a manifest path string is absolute in any spelling west
+/// rejects: platform-absolute (drive-rooted on Windows), or starting
+/// with either separator.
+fn is_absolute_path_str(s: &str) -> bool {
+    Path::new(s).is_absolute() || s.starts_with('/') || s.starts_with('\\')
+}
+
+/// Normalize a manifest-relative path to v1's canonical form: `.`
+/// segments dropped, `..` collapsed against a preceding segment (a
+/// leading `..` is kept so callers can still detect escapes), empty
+/// segments removed, and `/` as the only separator. v1 forced POSIX
+/// style for every project path "because west is a git wrapper and git
+/// prefers to work with POSIX paths", and consumers (`{path}` output,
+/// `manifest --freeze`, the python API, tests) depend on that on
+/// Windows as well. Only `/` splits on POSIX, where `\` is a legal
+/// filename character; on Windows `\` is a separator too, matching
+/// `pathlib.PureWindowsPath.as_posix()`.
+///
+/// A leading separator is preserved so the absolute-path check that
+/// follows still fires.
+pub fn posix_clean(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    let is_sep = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in s.split(is_sep) {
+        match seg {
+            "" | "." => {}
+            ".." => match out.last() {
+                Some(&"..") | None => out.push(".."),
+                Some(_) => {
+                    out.pop();
+                }
+            },
+            _ => out.push(seg),
+        }
+    }
+    let lead = if s.starts_with(is_sep) { "/" } else { "" };
+    if out.is_empty() {
+        return PathBuf::from(if lead.is_empty() { "." } else { "/" });
+    }
+    PathBuf::from(format!("{lead}{}", out.join("/")))
 }
 
 /// Returns true when `path`, after `..`/`.` collapsing, lands at the
@@ -2504,6 +2557,60 @@ mod tests {
 
     fn yaml(s: &str) -> Result<Manifest, ManifestError> {
         Manifest::from_yaml_str(s)
+    }
+
+    #[test]
+    fn posix_clean_normalizes_like_v1() {
+        let clean = |s: &str| posix_clean(Path::new(s)).to_string_lossy().into_owned();
+        assert_eq!(clean("subdir/Kconfiglib"), "subdir/Kconfiglib");
+        assert_eq!(clean("subdir///foo"), "subdir/foo");
+        assert_eq!(clean("./subdir/./foo/"), "subdir/foo");
+        assert_eq!(clean("subdir/inner/../foo"), "subdir/foo");
+        assert_eq!(clean("a/b/../../c"), "c");
+        // A leading `..` survives so the escape check still fires.
+        assert_eq!(clean("../escape"), "../escape");
+        assert_eq!(clean("a/../.."), "..");
+        // Fully collapsed → `.`, like `path_clean`.
+        assert_eq!(clean("a/.."), ".");
+        assert_eq!(clean(""), ".");
+        // A leading separator is kept for the absolute-path check.
+        assert_eq!(clean("/abs/path"), "/abs/path");
+        if cfg!(windows) {
+            // `\` is a separator on Windows (PureWindowsPath.as_posix()).
+            assert_eq!(clean("prefix\\project"), "prefix/project");
+            assert_eq!(clean("a\\.\\b\\..\\c"), "a/c");
+        } else {
+            // ...but a legal filename character on POSIX.
+            assert_eq!(clean("back\\slash"), "back\\slash");
+        }
+    }
+
+    #[test]
+    fn absolute_project_path_rejected_before_normalization() {
+        // The raw value is checked before `..` collapsing, so an
+        // absolute path that would normalize to something
+        // relative-looking is still rejected.
+        let cases: &[&str] = if cfg!(windows) {
+            &[
+                "C:\\a\\..\\..\\foo",
+                "C:\\foo",
+                "\\\\server\\share\\x",
+                "/abs/../rel",
+            ]
+        } else {
+            &["/abs/../rel", "/abs", "//double"]
+        };
+        for case in cases {
+            let err = yaml(&format!(
+                "manifest:\n  projects:\n    - name: p\n      url: https://example.com/p\n      revision: main\n      path: \"{}\"\n",
+                case.replace('\\', "\\\\")
+            ))
+            .expect_err(case);
+            assert!(
+                matches!(err, ManifestError::AbsoluteProjectPath { .. }),
+                "{case}: {err}"
+            );
+        }
     }
 
     #[test]
