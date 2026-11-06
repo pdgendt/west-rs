@@ -49,7 +49,10 @@ def test_migrate_round_trip_via_from_file(tmpdir, isolated_home):
         'git.binary = /usr/bin/git\n'
     )
 
-    cmd(f'config migrate --from {v1} --file {v2}')
+    # argv list, not an f-string: conftest's `cmd` splits strings with
+    # shlex in POSIX mode, which strips the backslashes out of Windows
+    # paths.
+    cmd(['config', 'migrate', '--from', str(v1), '--file', str(v2)])
 
     # Read the v2 file via the python-exposed Configuration; values
     # must come back with the right *types* (jobs=int, rebase=bool),
