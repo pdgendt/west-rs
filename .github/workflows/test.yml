@@ -2,7 +2,12 @@
 # yamllint disable rule:truthy
 name: Python Test
 
-on: [push, pull_request]
+# Pushes to a PR branch are covered by the pull_request event; running
+# the push event too doubled every job for in-repo branches.
+on:
+  push:
+    branches: ["main", "v*-branch"]
+  pull_request:
 
 permissions:
   contents: read
