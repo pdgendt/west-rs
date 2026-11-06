@@ -56,11 +56,22 @@ impl ProjectContext<'_> {
             // `project.url or 'N/A'` rendering in `_format_project`).
             "url" => Ok(or_na(&self.project.url)),
             "path" => Ok(self.project.path.to_string_lossy().into_owned()),
-            "abspath" => Ok(self
-                .workspace
-                .join(&self.project.path)
-                .to_string_lossy()
-                .into_owned()),
+            "abspath" => Ok({
+                // `project.path` is always POSIX-style (see
+                // `posix_clean`); v1's `os.path.abspath` rendered the
+                // joined path with native separators, so on Windows
+                // rewrite `/` to `\` to match.
+                let s = self
+                    .workspace
+                    .join(&self.project.path)
+                    .to_string_lossy()
+                    .into_owned();
+                if cfg!(windows) {
+                    s.replace('/', "\\")
+                } else {
+                    s
+                }
+            }),
             "posixpath" => Ok({
                 // Mirror python's `PurePath.as_posix()`: rewrite the
                 // native separator only on Windows. On POSIX, `\` is
