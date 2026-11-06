@@ -169,7 +169,7 @@ jobs:
                       sys.exit(f"{f.name}: expected a cp310-abi3 wheel, got {sorted(tagset)}")
               else:
                   name, ver = parse_sdist_filename(f.name)
-              if name != "west":
+              if name != "west-rs":
                   sys.exit(f"{f.name}: unexpected distribution name {name!r}")
               versions.add(ver)
           if len(versions) != 1:

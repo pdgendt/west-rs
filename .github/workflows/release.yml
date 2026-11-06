@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.target == 'pypi' && 'release' || 'testpypi' }}
-      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/project/west/' || 'https://test.pypi.org/project/west/' }}
+      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/project/west-rs/' || 'https://test.pypi.org/project/west-rs/' }}
     permissions:
       # Mandatory for trusted publishing. Nothing else: this job does
       # not even check out the repository.

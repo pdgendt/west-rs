@@ -7,7 +7,7 @@
 
 import importlib.metadata
 
-__version__ = importlib.metadata.version("west")
+__version__ = importlib.metadata.version("west-rs")
 #
 # MAINTAINERS:
 #
