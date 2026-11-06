@@ -101,14 +101,13 @@ jobs:
           - os: ubuntu-latest
             python-version: '3.13'
             task: types
-          # Non-gh pytest variant.
-          - os: ubuntu-latest
-            python-version: '3.13'
-            task: test
           # Keep pytest-xdist exercised so it doesn't rot for developers.
+          # Not `test-xdist`: that refs the `test` task, whose `build`
+          # dep runs cargo, which can't fetch crates behind the blocked
+          # network and would override the installed wheel anyway.
           - os: ubuntu-latest
             python-version: '3.13'
-            task: test-xdist
+            task: gh-test-xdist
 
     steps:
       - name: Checkout

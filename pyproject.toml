@@ -266,3 +266,9 @@ gh-format = "ruff format --check --output-format=github"
 # Keep the --cov= option in sync with [tool.coverage.run] above.
 cmd = "python -m pytest -W error -v -o pythonpath= -o junit_family=xunit1 --junitxml=junit.xml --cov-report=html --cov=src/"
 env = {PYTHONIOENCODING = "utf-8"}
+
+# pytest-xdist variant of gh-test. `test-xdist` cannot serve here: it
+# refs `test`, whose `build` dep runs cargo, and CI runs with the network
+# blocked and the project installed from a prebuilt wheel.
+[tool.poe.tasks.gh-test-xdist]
+ref = "gh-test -n auto"
