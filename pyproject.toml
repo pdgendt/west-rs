@@ -11,7 +11,10 @@ build-backend = "_build_backend"
 backend-path = ["."]
 
 [project]
-name = "west"
+# Distribution name on PyPI. The import package and the binary are still
+# `west`: `pip install west-rs` is a drop-in replacement for the v1 `west`
+# distribution, and the two cannot be installed side by side.
+name = "west-rs"
 # Sourced from `[workspace.package] version` in the root Cargo.toml.
 # Maturin populates this from `cargo metadata` during build; the
 # `_build_backend.py` wrapper re-exports maturin's
