@@ -116,7 +116,7 @@ Pre-release test plan
 
 4. Install the alpha on test platforms. ::
 
-     pip3 install west==X.Y.0aN
+     pip3 install west-rs==X.Y.0aN
 
    On platforms without a prebuilt wheel this compiles from the sdist; confirm
    that works too, since end users on those platforms will hit the same path.
@@ -192,9 +192,9 @@ Releases are built and uploaded by GitHub Actions, and only on request:
 
 2. Open the ``Release`` workflow in the Actions tab, click "Run workflow",
    select the tag as the ref, and choose ``testpypi``. Check the result at
-   https://test.pypi.org/project/west/ and try an install from it::
+   https://test.pypi.org/project/west-rs/ and try an install from it::
 
-     pip3 install --index-url https://test.pypi.org/simple/ west==X.Y.Z
+     pip3 install --index-url https://test.pypi.org/simple/ west-rs==X.Y.Z
 
 3. Run the workflow again on the same tag with ``pypi``. The build repeats,
    the ``publish`` job waits for an approval from the ``release``
@@ -218,7 +218,7 @@ need a running Docker daemon; macOS builds need the python.org CPython 3.10
 installer (see the script header). For just the sdist, ``uv build --sdist`` in
 a clean tree is enough. Verify a wheel::
 
-  pip3 install -U wheelhouse/west-*.whl
+  pip3 install -U wheelhouse/west_rs-*.whl
   west --version
   python3 -c 'import west.version; print(west.version.__version__)'
 
